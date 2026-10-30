@@ -35,24 +35,47 @@
     $('#live').disabled = true;
   }
 
+  /**
+   * Safari включает звук только синхронно в обработчике нажатия: контекст создаётся
+   * и «будится» здесь, до любых await. Вызывать первой строкой обработчика клика.
+   */
+  function unlockAudio() {
+    if (!ctx) ctx = new AudioContext({ latencyHint: 'interactive' });
+    if (ctx.state !== 'running') ctx.resume().catch(() => {});
+  }
+
+  /** iOS: «запись» пока открыт микрофон, «воспроизведение» без него (иначе прослушивание очень тихое). */
+  function setAudioSession(type) {
+    try { if (navigator.audioSession) navigator.audioSession.type = type; } catch (e) { /* нет API */ }
+  }
+
+  /** Контекст, ворклет и микрофон. Микрофон открыт только пока идёт запись или живой режим. */
   async function ensureAudio() {
-    if (ctx) {
-      if (ctx.state !== 'running') await ctx.resume();
-      return;
+    unlockAudio();
+    if (!node) {
+      // Два обычных модуля в общей области ворклета: dsp.js задаёт VoiceDSP, processor.js его использует.
+      // (Склейка в Blob-ссылку ненадёжна в старых Safari.)
+      await ctx.audioWorklet.addModule('dsp.js');
+      await ctx.audioWorklet.addModule('processor.js');
+      node = new AudioWorkletNode(ctx, 'voice-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+      node.port.onmessage = onWorkletMessage;
+      node.connect(ctx.destination);
+      sendConfig();
     }
-    ctx = new AudioContext({ latencyHint: 'interactive' });
-    // В ворклете нет importScripts — склеиваем dsp.js и processor.js в один модуль.
-    const [dsp, proc] = await Promise.all(['dsp.js', 'processor.js'].map((f) => fetch(f).then((r) => r.text())));
-    const url = URL.createObjectURL(new Blob([dsp, '\n', proc], { type: 'application/javascript' }));
-    await ctx.audioWorklet.addModule(url);
-    node = new AudioWorkletNode(ctx, 'voice-processor', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
-    node.port.onmessage = onWorkletMessage;
-    node.connect(ctx.destination);
-    sendConfig();
-    await openMic();
-    await refreshDevices();
-    await applySink();
+    if (!stream) {
+      setAudioSession('play-and-record');
+      await openMic();
+      await refreshDevices();
+      await applySink();
+    }
     if (ctx.state !== 'running') await ctx.resume();
+  }
+
+  function releaseMic() {
+    if (stream) stream.getTracks().forEach((t) => t.stop());
+    if (source) source.disconnect();
+    stream = source = null;
+    setAudioSession('playback');
   }
 
   async function openMic() {
@@ -236,6 +259,7 @@
   // ---------- режим «Запись» ----------
   $('#rec').addEventListener('click', async () => {
     if (recording) { stopRecording(); return; }
+    unlockAudio();  // синхронно, пока действует нажатие (Safari)
     try { await ensureAudio(); } catch (e) { micError(e); return; }
     recChunks = [];
     recSamples = 0;
@@ -264,6 +288,7 @@
     const btn = $('#rec');
     btn.classList.replace('stop', 'rec');
     btn.innerHTML = '●&nbsp; Записать';
+    releaseMic();  // на iPhone при открытом микрофоне прослушивание идёт очень тихо
     const audio = new Float32Array(recSamples);
     let pos = 0;
     for (const c of recChunks) { audio.set(c, pos); pos += c.length; }
@@ -323,14 +348,18 @@
     btn.textContent = on ? 'Выключить' : 'Включить';
     btn.classList.toggle('on', on);
     if (ctx) await updateMonitor();
+    if (!on) releaseMic();
   }
-  $('#live').addEventListener('click', () => setLive(!live));
+  $('#live').addEventListener('click', () => {
+    if (!live) unlockAudio();  // синхронно, пока действует нажатие (Safari)
+    setLive(!live);
+  });
 
   // ---------- устройства ----------
   $('#mic').addEventListener('change', async (e) => {
     state.mic = e.target.value;
     save();
-    if (ctx) { try { await openMic(); } catch (err) { micError(err); } }
+    if (stream) { try { await openMic(); } catch (err) { micError(err); } }  // переоткрываем, только если он сейчас открыт
   });
   $('#out').addEventListener('change', async (e) => {
     state.out = e.target.value;

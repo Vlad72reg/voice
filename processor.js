@@ -1,6 +1,6 @@
 /*
  * AudioWorklet: микрофон -> (запись сырого звука) -> обработка -> выход.
- * app.js склеивает dsp.js + этот файл в один модуль (Blob), т. к. в ворклете нет importScripts.
+ * app.js сначала загружает в ворклет dsp.js (он задаёт VoiceDSP в общей области), потом этот файл.
  */
 class VoiceProcessor extends AudioWorkletProcessor {
   constructor() {
