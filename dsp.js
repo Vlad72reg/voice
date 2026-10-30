@@ -279,7 +279,7 @@
       this.buf = new Float64Array(Math.floor(sr * 0.1)); this.pos = 0; this.t = 0;
     }
     process(x, len) {
-      const size = this.buf.length, voices = 3, mix = 0.45;
+      const size = this.buf.length, voices = 3, mix = 0.4;
       for (let i = 0; i < len; i++) {
         this.buf[this.pos] = x[i];
         const time = (this.t + i) / this.sr;
@@ -302,8 +302,8 @@
     process(x, len) {
       for (let i = 0; i < len; i++) {
         const d = this.buf[this.pos];
-        this.buf[this.pos] = x[i] + d * 0.35;
-        x[i] += d * 0.22;
+        this.buf[this.pos] = x[i] + d * 0.25;
+        x[i] += d * 0.15;
         this.pos = (this.pos + 1) % this.buf.length;
       }
     }
@@ -313,8 +313,9 @@
   class Reverb {
     constructor(sr) {
       const scale = sr / 44100;
-      this.feedback = 0.7 + 0.28 * 0.92; this.damp = 0.35 * 0.4;
-      this.wet = 0.45 * 0.15; this.dry = 0.65;
+      // Короткая тихая «комната»: длинная реверберация сливала слова (см. ghost_lab.py).
+      this.feedback = 0.7 + 0.28 * 0.65; this.damp = 0.45 * 0.4;
+      this.wet = 0.2 * 0.15; this.dry = 0.85;
       this.comb = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
         .map((d) => ({ buf: new Float64Array(Math.floor(d * scale)), pos: 0, lp: 0 }));
       this.ap = [556, 441, 341, 225].map((d) => ({ buf: new Float64Array(Math.floor(d * scale)), pos: 0 }));
@@ -358,7 +359,7 @@
   const PRESETS = {
     'Мужской': { pitch: -4, formant: 0.87, whisper: 0, ghost: false, level: 1.0, hint: 'ниже и глубже' },
     'Женский': { pitch: 5, formant: 1.17, whisper: 0, ghost: false, level: 4.5, hint: 'выше и светлее' },
-    'Призрак': { pitch: -3, formant: 0.92, whisper: 0.55, ghost: true, level: 2.0, hint: 'шёпот и эхо' },
+    'Призрак': { pitch: -3, formant: 0.92, whisper: 0.5, ghost: true, level: 9.0, hint: 'шёпот и эхо' },
     'Без изменений': { pitch: 0, formant: 1.0, whisper: 0, ghost: false, level: 0, hint: 'ваш голос' },
   };
 
@@ -380,7 +381,7 @@
       this.shifter.whisper = s.whisper;
       if (s.ghost && this.ghostFx.length === 0) {
         const sr = this.sr;
-        this.ghostFx = [new Filter(sr, 180, true), new Filter(sr, 6500, false),
+        this.ghostFx = [new Filter(sr, 150, true), new Filter(sr, 7000, false),
           new Chorus(sr), new EchoDelay(sr), new Reverb(sr)];
       } else if (!s.ghost) this.ghostFx = [];
       this.limiter.makeup = db(s.gain);
