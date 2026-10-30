@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Изменение голоса</title>
+  <meta name="description" content="Мужской, женский и голос призрака прямо в браузере. Голос обрабатывается на вашем устройстве и никуда не отправляется.">
+  <meta name="theme-color" content="#17171C">
+  <link rel="icon" href="icon.png">
+  <link rel="apple-touch-icon" href="icon.png">
+  <style>
+    :root {
+      --bg: #17171C; --card: #23232B; --card-hover: #2E2E38; --accent: #7C4DFF; --accent-hover: #6A3DF0;
+      --teal: #00BFD8; --danger: #E5484D; --muted: #9A9AA8; --text: #F2F2F5; --warn-bg: #2E2618; --warn: #F0B45A;
+      color-scheme: dark;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.45 "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+    }
+    main { max-width: 560px; margin: 0 auto; padding: 20px 16px 32px; }
+    header { display: flex; align-items: center; gap: 12px; }
+    header img { width: 48px; height: 48px; border-radius: 12px; }
+    h1 { margin: 0; font-size: 24px; }
+    .sub { margin: 0; color: var(--muted); font-size: 14px; }
+    button, .button {
+      font: inherit; color: inherit; border: 0; cursor: pointer; text-decoration: none;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    button:disabled, .button[aria-disabled="true"] { opacity: .4; cursor: default; pointer-events: none; }
+    .tabs { display: flex; background: var(--card); border-radius: 14px; padding: 4px; margin-top: 20px; }
+    .tabs button { flex: 1; height: 42px; border-radius: 11px; background: none; font-weight: 600; }
+    .tabs button[aria-selected="true"] { background: var(--accent); }
+    .voices { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+    .voice {
+      flex-direction: column; height: 72px; border-radius: 16px; background: var(--card);
+      border: 2px solid var(--card); transition: background .15s;
+    }
+    .voice:hover { background: var(--card-hover); }
+    .voice b { font-size: 17px; }
+    .voice span { font-size: 13px; color: #d8d8e0; }
+    .voice[aria-pressed="true"] { background: var(--accent); border-color: var(--teal); }
+    .panel { margin-top: 14px; }
+    .big { width: 100%; min-height: 58px; border-radius: 16px; font-size: 18px; font-weight: 700; background: var(--accent); }
+    .big:hover { background: var(--accent-hover); }
+    .big.rec { background: var(--danger); }
+    .big.stop { background: var(--card); }
+    .big.on { background: var(--danger); }
+    .meter { height: 8px; border-radius: 4px; background: #3A3A44; overflow: hidden; margin-top: 4px; }
+    .meter i { display: block; height: 100%; width: 0; background: var(--teal); transition: width .06s linear; }
+    .meter.out i { background: var(--accent); }
+    .label { font-size: 13px; color: var(--muted); margin-top: 10px; }
+    .status { color: var(--muted); font-size: 15px; margin: 10px 0 0; }
+    audio { width: 100%; margin-top: 12px; }
+    .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; }
+    .actions .button, .actions button { min-height: 52px; border-radius: 14px; font-weight: 700; background: var(--card); }
+    .actions .primary { background: var(--accent); }
+    .warn { background: var(--warn-bg); color: var(--warn); border-radius: 12px; padding: 10px 12px; font-size: 14px; margin: 0 0 12px; }
+    details { margin-top: 18px; background: var(--card); border-radius: 14px; padding: 4px 14px; }
+    summary { cursor: pointer; font-weight: 700; padding: 10px 0; }
+    .row { display: flex; justify-content: space-between; margin-top: 10px; font-size: 15px; }
+    .row output { color: var(--muted); }
+    input[type=range] { width: 100%; accent-color: var(--accent); }
+    .check { display: flex; gap: 10px; align-items: center; margin: 14px 0 6px; font-size: 15px; }
+    .check input { width: 20px; height: 20px; accent-color: var(--accent); }
+    select {
+      width: 100%; margin-top: 4px; padding: 10px; border-radius: 10px; font: inherit; font-size: 15px;
+      background: var(--bg); color: var(--text); border: 1px solid #3A3A44;
+    }
+    .link { background: none; color: var(--teal); padding: 10px 0; font-size: 15px; }
+    .hint { color: var(--teal); font-size: 14px; margin: 10px 0; }
+    .hint.bad { color: var(--warn); }
+    footer { margin-top: 26px; color: var(--muted); font-size: 13px; text-align: center; }
+    footer p { margin: 6px 0; }
+    footer a { color: var(--muted); }
+    #unsupported { display: none; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <img src="icon.png" alt="">
+    <div>
+      <h1>Изменение голоса</h1>
+      <p class="sub">мужской, женский и голос призрака</p>
+    </div>
+  </header>
+
+  <p class="warn" id="unsupported">Этот браузер не поддерживает обработку звука. Откройте страницу в свежем Chrome, Edge, Safari или Firefox.</p>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" id="tab-record" aria-selected="true">Запись</button>
+    <button role="tab" id="tab-live" aria-selected="false">Вживую</button>
+  </div>
+
+  <div class="voices" id="voices"></div>
+
+  <section class="panel" id="panel-record">
+    <button class="big rec" id="rec">●&nbsp; Записать</button>
+    <div class="meter"><i id="rec-meter"></i></div>
+    <p class="status" id="rec-status">Запишите фразу — потом её можно прослушать любым голосом, скачать или отправить.</p>
+    <audio id="preview" controls hidden></audio>
+    <div class="actions">
+      <a class="button primary" id="download" aria-disabled="true">Скачать</a>
+      <button id="share" disabled>Поделиться</button>
+    </div>
+  </section>
+
+  <section class="panel" id="panel-live" hidden>
+    <p class="warn">Наденьте наушники — иначе динамик попадёт в микрофон и будет свист.<br><br>
+      <b>На компьютере</b> голос можно отправить в Zoom, Discord и другие программы: установите
+      VB-CABLE (vb-cable.com), в «Устройствах» ниже выберите «CABLE Input», а в программе для звонков —
+      микрофон «CABLE Output».<br>
+      <b>На телефоне</b> в звонки голос не передаётся — для сообщений используйте «Запись».</p>
+    <button class="big" id="live">Включить</button>
+    <div class="label">Микрофон</div>
+    <div class="meter"><i id="live-in"></i></div>
+    <div class="label">Изменённый голос</div>
+    <div class="meter out"><i id="live-out"></i></div>
+  </section>
+
+  <details id="tune">
+    <summary>Тонкая настройка</summary>
+    <div class="row"><span>Высота тона</span><output id="pitch-v"></output></div>
+    <input type="range" id="pitch" min="-12" max="12" step="0.5">
+    <div class="row"><span>Тембр</span><output id="formant-v"></output></div>
+    <input type="range" id="formant" min="0.7" max="1.4" step="0.01">
+    <div class="row"><span>Шёпот</span><output id="whisper-v"></output></div>
+    <input type="range" id="whisper" min="0" max="1" step="0.05">
+    <div class="row"><span>Громкость, дБ</span><output id="gain-v"></output></div>
+    <input type="range" id="gain" min="-12" max="12" step="0.5">
+    <label class="check"><input type="checkbox" id="ghost"> Эффекты призрака: эхо, реверберация, хорус</label>
+    <button class="link" id="reset">Сбросить к выбранному голосу</button>
+  </details>
+
+  <details id="devices">
+    <summary>Устройства</summary>
+    <div class="label">Микрофон</div>
+    <select id="mic"><option value="">По умолчанию</option></select>
+    <div id="out-block">
+      <div class="label">Куда отправлять голос</div>
+      <select id="out"><option value="">По умолчанию (динамики/наушники)</option></select>
+      <label class="check"><input type="checkbox" id="monitor-on"> Слышать себя в наушниках</label>
+      <select id="monitor"><option value="">По умолчанию</option></select>
+    </div>
+    <p class="hint" id="cable-hint">Названия устройств появятся после первого доступа к микрофону.</p>
+  </details>
+
+  <footer>
+    <p>Голос обрабатывается на вашем устройстве и никуда не отправляется.</p>
+    <p>Для звонков на компьютере нужен виртуальный микрофон <a href="https://vb-cable.com" target="_blank" rel="noopener">VB-CABLE</a> от VB-Audio (donationware).</p>
+  </footer>
+</main>
+<script src="dsp.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
