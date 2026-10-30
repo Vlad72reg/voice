@@ -130,7 +130,10 @@
       this.synExc = new Float64Array(bins); this.synFreq = new Float64Array(bins);
       // Очереди: вход копится до hop сэмплов, выход заранее заполнен тишиной длиной n.
       this.inQ = new Float64Array(this.hop); this.inCount = 0;
-      this.outQ = new Float64Array(n * 8); this.outRead = 0; this.outCount = n;
+      this.synMag = new Float64Array(bins); this.zRe = new Float64Array(bins); this.zIm = new Float64Array(bins);
+      // Выход выдаётся порциями по hop — запаса в один hop хватает; итоговая задержка ровно n
+      // (раньше запас n добавлял лишние 37 мс).
+      this.outQ = new Float64Array(n * 8); this.outRead = 0; this.outCount = this.hop;
     }
 
     isBypass() {
@@ -189,14 +192,26 @@
           const i0 = Math.floor(x), fr = x - i0;
           warped = i0 + 1 < bins ? env[i0] + (env[i0 + 1] - env[i0]) * fr : env[i0];
         }
-        const m = synExc[k] * warped;
+        const m = this.synMag[k] = synExc[k] * warped;
         this.sumPhase[k] = (this.sumPhase[k] + synFreq[k] * expected) % TWO_PI;
-        let pr = Math.cos(this.sumPhase[k]), pi = Math.sin(this.sumPhase[k]);
+        this.zRe[k] = m * Math.cos(this.sumPhase[k]);
+        this.zIm[k] = m * Math.sin(this.sumPhase[k]);
+      }
+      const zr = this.zRe, zi = this.zIm;
+      for (let k = 0; k < bins; k++) {
+        // «Мягкая» фиксация фаз (Puckette): фаза Z[k] − Z[k−1] − Z[k+1] — меньше «электронного»
+        // призвука. Минус: окно не центрировано, соседние бины одной гармоники в противофазе.
+        let lr = zr[k], li = zi[k];
+        if (k > 0) { lr -= zr[k - 1]; li -= zi[k - 1]; }
+        if (k < bins - 1) { lr -= zr[k + 1]; li -= zi[k + 1]; }
+        const ang = Math.atan2(li, lr);
+        let pr = Math.cos(ang), pi = Math.sin(ang);
         if (w > 0) {
           const a = Math.random() * TWO_PI;
           pr = (1 - w) * pr + w * Math.cos(a);
           pi = (1 - w) * pi + w * Math.sin(a);
         }
+        const m = this.synMag[k];
         re[k] = m * pr; im[k] = m * pi;
       }
       this.fft.irfft(re, im, tmp);
@@ -355,13 +370,141 @@
     }
   }
 
-  /** Те же пресеты, что в программе для ПК и в APK. level — компенсация громкости, дБ. */
-  const PRESETS = {
-    'Мужской': { pitch: -4, formant: 0.87, whisper: 0, ghost: false, level: 1.0, hint: 'ниже и глубже' },
-    'Женский': { pitch: 5, formant: 1.17, whisper: 0, ghost: false, level: 4.5, hint: 'выше и светлее' },
-    'Призрак': { pitch: -3, formant: 0.92, whisper: 0.5, ghost: true, level: 9.0, hint: 'шёпот и эхо' },
-    'Без изменений': { pitch: 0, formant: 1.0, whisper: 0, ghost: false, level: 0, hint: 'ваш голос' },
+  /** Полоса эквалайзера (RBJ Audio EQ Cookbook): lowshelf | highshelf | peak. */
+  class EQ {
+    constructor(sr, kind, freq, gainDb, q = 0.707) {
+      const a = Math.pow(10, gainDb / 40), w0 = TWO_PI * freq / sr;
+      const cos = Math.cos(w0), alpha = Math.sin(w0) / (2 * q);
+      let b, d;
+      if (kind === 'peak') {
+        b = [1 + alpha * a, -2 * cos, 1 - alpha * a];
+        d = [1 + alpha / a, -2 * cos, 1 - alpha / a];
+      } else {
+        const k = 2 * Math.sqrt(a) * alpha;
+        if (kind === 'lowshelf') {
+          b = [a * ((a + 1) - (a - 1) * cos + k), 2 * a * ((a - 1) - (a + 1) * cos), a * ((a + 1) - (a - 1) * cos - k)];
+          d = [(a + 1) + (a - 1) * cos + k, -2 * ((a - 1) + (a + 1) * cos), (a + 1) + (a - 1) * cos - k];
+        } else {  // highshelf
+          b = [a * ((a + 1) + (a - 1) * cos + k), -2 * a * ((a - 1) + (a + 1) * cos), a * ((a + 1) + (a - 1) * cos - k)];
+          d = [(a + 1) - (a - 1) * cos + k, 2 * ((a - 1) - (a + 1) * cos), (a + 1) - (a - 1) * cos - k];
+        }
+      }
+      this.b0 = b[0] / d[0]; this.b1 = b[1] / d[0]; this.b2 = b[2] / d[0];
+      this.a1 = d[1] / d[0]; this.a2 = d[2] / d[0];
+      this.z1 = 0; this.z2 = 0;
+    }
+    process(x, len) {
+      for (let i = 0; i < len; i++) {
+        const v = x[i], out = this.b0 * v + this.z1;
+        this.z1 = this.b1 * v - this.a1 * out + this.z2;
+        this.z2 = this.b2 * v - this.a2 * out;
+        x[i] = out;
+      }
+    }
+  }
+
+  /** Компрессор «как в эфире»: env = a·env + (1−a)·x², сглаженное усиление gs = c·gs + (1−c)·g. */
+  class Compressor {
+    constructor(sr, thresholdDb, ratio, makeupDb) {
+      this.threshold = thresholdDb; this.slope = 1 - 1 / ratio; this.makeup = db(makeupDb);
+      this.a = Math.exp(-1 / (sr * 0.010)); this.c = Math.exp(-1 / (sr * 0.040));
+      this.env = 0; this.gs = 1;
+    }
+    process(x, len) {
+      for (let i = 0; i < len; i++) {
+        this.env = this.a * this.env + (1 - this.a) * x[i] * x[i];
+        const over = Math.max(10 * Math.log10(this.env + 1e-12) - this.threshold, 0);
+        this.gs = this.c * this.gs + (1 - this.c) * Math.pow(10, -over * this.slope / 20);
+        x[i] *= this.gs * this.makeup;
+      }
+    }
+  }
+
+  /**
+   * Голоса — как VOICES в программе для ПК и в APK. target — целевая высота (Гц): сдвиг
+   * считается от высоты голоса пользователя (null — фиксированный pitch/formant, как у «Призрака»).
+   */
+  const VOICES = {
+    'Мужской': { target: 105, tweak: 0.95, whisper: 0, ghost: false, level: 1.6, hint: 'ниже и глубже' },
+    'Женский': { target: 220, tweak: 1.0, whisper: 0, ghost: false, level: 0.8, hint: 'выше и светлее' },
+    'Призрак': { target: null, pitch: -3, formant: 0.92, whisper: 0.5, ghost: true, level: 7.8, hint: 'шёпот и эхо' },
+    'Радио-бас': { target: 85, tweak: 0.97, whisper: 0, ghost: false, level: -1.2, style: 'radio', hint: 'глубокий эфирный' },
+    'Аниме / VTuber': { target: 250, tweak: 1.03, whisper: 0, ghost: false, level: -2.0, style: 'anime', hint: 'звонкий и милый' },
+    'Мягкий женский': { target: 205, tweak: 0.98, whisper: 0, ghost: false, level: -1.5, style: 'soft', hint: 'тёплый, эфирный' },
+    'Без изменений': { target: null, pitch: 0, formant: 1.0, whisper: 0, ghost: false, level: 0, hint: 'ваш голос' },
   };
+  /** Типичная высота голоса пользователя (переключатель «Мой голос»), Гц. */
+  const USER_VOICES = { 'мужской': 115, 'женский': 205 };
+  const MAX_SHIFT = 12, LEVEL_PER_SEMITONE = 0.43;
+
+  /** Компенсация громкости голоса при сдвиге pitch (и для ручного ползунка). */
+  function levelFor(name, pitch) {
+    const v = VOICES[name];
+    return v.level + (v.target ? LEVEL_PER_SEMITONE * pitch : 0);
+  }
+
+  /** Параметры голоса name для голоса пользователя (Гц или «мужской»/«женский»). */
+  function settingsFor(name, userVoice) {
+    const v = VOICES[name];
+    const f0 = typeof userVoice === 'string' ? USER_VOICES[userVoice] : userVoice;
+    let pitch, formant;
+    if (!v.target) { pitch = v.pitch; formant = v.formant; } else {
+      pitch = 12 * Math.log2(v.target / f0);
+      pitch = v.target < 150 ? Math.min(pitch, 0) : Math.max(pitch, 0);  // «низкие» только вниз
+      pitch = Math.round(Math.max(-MAX_SHIFT, Math.min(MAX_SHIFT, pitch)) * 2) / 2;
+      formant = Math.round(Math.pow(Math.pow(2, pitch / 12), 0.25) * v.tweak * 100) / 100;
+    }
+    return { pitch, formant, whisper: v.whisper, ghost: v.ghost,
+      level: Math.round(levelFor(name, pitch) * 10) / 10, style: v.style || null };
+  }
+
+  /** Эфирная обработка стримерских голосов. */
+  const STYLES = {
+    radio: (sr) => [new Filter(sr, 70, true), new EQ(sr, 'lowshelf', 140, 5), new EQ(sr, 'peak', 3000, 2, 1.0),
+      new Compressor(sr, -24, 4, 4)],
+    anime: (sr) => [new Filter(sr, 150, true), new EQ(sr, 'peak', 3500, 3, 1.0), new EQ(sr, 'highshelf', 9000, 3),
+      new Compressor(sr, -22, 3, 3)],
+    soft: (sr) => [new Filter(sr, 90, true), new EQ(sr, 'lowshelf', 200, 2), new EQ(sr, 'peak', 2500, 1.5, 1.0),
+      new EQ(sr, 'highshelf', 10000, 2), new Compressor(sr, -24, 2.5, 3)],
+  };
+
+  /** Высота голоса по YIN (как pitch.py): медиана по звонким кадрам, Гц; 0 — голос не найден. */
+  function medianF0(audio, sampleRate) {
+    const d = Math.max(1, Math.round(sampleRate / 16000)), fs = sampleRate / d;
+    const len = Math.min(Math.floor(audio.length / d), Math.floor(fs * 30));
+    const x = new Float64Array(len);
+    for (let i = 0; i < len; i++) { let s = 0; for (let j = 0; j < d; j++) s += audio[i * d + j]; x[i] = s / d; }
+    const frame = Math.round(0.064 * fs), hop = Math.round(0.016 * fs);
+    const tmin = Math.floor(fs / 400), tmax = Math.floor(fs / 60);
+    let peak = 0;
+    for (const v of x) peak = Math.max(peak, Math.abs(v));
+    const loud = 0.05 * peak * 0.2, dt = new Float64Array(tmax + 1), f0s = [];
+    for (let i = 0; i + frame + tmax < len; i += hop) {
+      let e = 0;
+      for (let j = 0; j < frame; j++) e += x[i + j] * x[i + j];
+      if (Math.sqrt(e / frame) < loud) continue;
+      let cum = 0, found = -1;
+      for (let t = 1; t <= tmax; t++) {
+        let s = 0;
+        for (let j = 0; j < frame; j++) { const v = x[i + j] - x[i + j + t]; s += v * v; }
+        cum += s;
+        dt[t] = s * t / (cum + 1e-12);
+        if (found < 0 && t >= tmin && dt[t] < 0.15) found = t;
+        if (found > 0 && t > found && dt[t] >= dt[t - 1]) { found = t - 1; break; }
+      }
+      if (found <= 0) continue;
+      let tau = found;
+      if (found > 1 && found < tmax) {
+        const a = dt[found - 1], b = dt[found], c = dt[found + 1], den = a - 2 * b + c;
+        if (den !== 0) tau += 0.5 * (a - c) / den;
+      }
+      f0s.push(fs / tau);
+    }
+    if (f0s.length < 5) return 0;
+    f0s.sort((p, q) => p - q);
+    const m = f0s.length;
+    return m % 2 ? f0s[(m - 1) / 2] : (f0s[m / 2 - 1] + f0s[m / 2]) / 2;
+  }
 
   class VoiceEngine {
     constructor(sr) {
@@ -370,11 +513,13 @@
       this.gate = new NoiseGate(sr);
       this.limiter = new Limiter(sr);
       this.ghostFx = [];
+      this.style = null;
+      this.styleFx = [];
       this.buf = new Float64Array(0);
       this.out = new Float64Array(0);
     }
 
-    /** s: {pitch, formant, whisper, ghost, gain} — gain уже с компенсацией голоса. */
+    /** s: {pitch, formant, whisper, ghost, gain, style} — gain уже с компенсацией голоса. */
     configure(s) {
       this.shifter.pitchRatio = Math.pow(2, s.pitch / 12);
       this.shifter.formantRatio = s.formant;
@@ -384,6 +529,11 @@
         this.ghostFx = [new Filter(sr, 150, true), new Filter(sr, 7000, false),
           new Chorus(sr), new EchoDelay(sr), new Reverb(sr)];
       } else if (!s.ghost) this.ghostFx = [];
+      const style = s.style || null;
+      if (style !== this.style) {
+        this.style = style;
+        this.styleFx = style ? STYLES[style](this.sr) : [];
+      }
       this.limiter.makeup = db(s.gain);
     }
 
@@ -394,6 +544,7 @@
       this.gate.process(b, len);
       this.shifter.process(b, o, len);
       for (const fx of this.ghostFx) fx.process(o, len);
+      for (const fx of this.styleFx) fx.process(o, len);
       this.limiter.process(o, len);
       for (let i = 0; i < len; i++) dst[i] = Number.isNaN(o[i]) ? 0 : o[i];
     }
@@ -430,5 +581,5 @@
     return buf;
   }
 
-  global.VoiceDSP = { VoiceEngine, PRESETS, processAll, encodeWav, _FFT: FFT };
+  global.VoiceDSP = { VoiceEngine, VOICES, USER_VOICES, settingsFor, levelFor, medianF0, processAll, encodeWav, _FFT: FFT };
 })(typeof globalThis !== 'undefined' ? globalThis : self);

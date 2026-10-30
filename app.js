@@ -1,24 +1,29 @@
 /* Страница «Изменение голоса»: режимы «Запись» и «Вживую», выбор устройств, настройки. */
 (() => {
   'use strict';
-  const { PRESETS } = VoiceDSP;
+  const { VOICES, USER_VOICES, settingsFor, levelFor } = VoiceDSP;
   const $ = (s) => document.querySelector(s);
   const MAX_SECONDS = 180;
   const sinkSupported = typeof AudioContext !== 'undefined' && 'setSinkId' in AudioContext.prototype;
 
   // ---------- настройки (localStorage может быть недоступен) ----------
-  const defaults = { preset: 'Мужской', mode: 'record', gain: 0, mic: '', out: '', monitor: '', monitorOn: false };
+  const defaults = { preset: 'Мужской', userVoice: 'мужской', mode: 'record', gain: 0, mic: '', out: '', monitor: '',
+    monitorOn: false };
   let state = { ...defaults };
   try { state = { ...defaults, ...JSON.parse(localStorage.getItem('voice-settings') || '{}') }; } catch (e) { /* нет хранилища */ }
-  if (!PRESETS[state.preset]) state.preset = defaults.preset;
-  const p0 = PRESETS[state.preset];
+  if (!VOICES[state.preset]) state.preset = defaults.preset;
+  if (!USER_VOICES[state.userVoice]) state.userVoice = defaults.userVoice;
+  let measuredF0 = 0;  // высота голоса, измеренная по последней записи (0 — нет)
+  /** Высота голоса пользователя: по записи (режим «Запись») или из «Мой голос». */
+  const userF0 = () => (state.mode === 'record' && measuredF0 > 0 ? measuredF0 : USER_VOICES[state.userVoice]);
+  const p0 = settingsFor(state.preset, userF0());
   for (const k of ['pitch', 'formant', 'whisper', 'ghost']) if (state[k] === undefined) state[k] = p0[k];
   const save = () => { try { localStorage.setItem('voice-settings', JSON.stringify(state)); } catch (e) { /* ничего */ } };
 
   /** Настройки для движка: громкость уже с компенсацией выбранного голоса. */
   const settings = () => ({
     pitch: state.pitch, formant: state.formant, whisper: state.whisper, ghost: state.ghost,
-    gain: state.gain + PRESETS[state.preset].level,
+    gain: state.gain + levelFor(state.preset, state.pitch), style: VOICES[state.preset].style || null,
   });
 
   // ---------- аудио ----------
@@ -191,7 +196,7 @@
 
   // ---------- интерфейс ----------
   const voices = $('#voices');
-  for (const [name, p] of Object.entries(PRESETS)) {
+  for (const [name, p] of Object.entries(VOICES)) {
     const b = document.createElement('button');
     b.className = 'voice';
     b.dataset.voice = name;
@@ -199,6 +204,19 @@
     b.addEventListener('click', () => chooseVoice(name));
     voices.appendChild(b);
   }
+  // Восьмая ячейка — «Мой голос»: от него считаются сдвиги голосов.
+  const me = document.createElement('div');
+  me.className = 'me';
+  me.innerHTML = '<span>Мой голос</span><div class="seg"><button data-user="мужской">Мужской</button>' +
+    '<button data-user="женский">Женский</button></div>';
+  for (const b of me.querySelectorAll('button')) {
+    b.addEventListener('click', () => {
+      state.userVoice = b.dataset.user;
+      measuredF0 = 0;  // выбор пользователя важнее измеренного по записи
+      chooseVoice(state.preset);
+    });
+  }
+  voices.appendChild(me);
 
   const sliders = {
     pitch: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
@@ -208,7 +226,8 @@
   };
 
   function render() {
-    for (const b of voices.children) b.setAttribute('aria-pressed', b.dataset.voice === state.preset);
+    for (const b of voices.querySelectorAll('.voice')) b.setAttribute('aria-pressed', b.dataset.voice === state.preset);
+    for (const b of me.querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.user === state.userVoice);
     for (const [k, fmt] of Object.entries(sliders)) {
       $('#' + k).value = state[k];
       $('#' + k + '-v').textContent = fmt(state[k]);
@@ -228,7 +247,8 @@
   }
 
   function chooseVoice(name) {
-    const p = PRESETS[name];
+    // Голос задан целевой высотой — сдвиг считается от высоты голоса пользователя.
+    const p = settingsFor(name, userF0());
     Object.assign(state, { preset: name, pitch: p.pitch, formant: p.formant, whisper: p.whisper, ghost: p.ghost });
     render();
     changed(true);
@@ -298,7 +318,20 @@
       return;
     }
     raw = audio;
-    processRecording();
+    measureThenProcess(audio);
+  }
+
+  /** Высота голоса по записи (YIN, в фоне) -> голос пересчитывается под неё -> обработка. */
+  function measureThenProcess(audio) {
+    const id = ++procId;
+    $('#rec-status').textContent = 'Определяю высоту вашего голоса…';
+    worker.onmessage = (e) => {
+      if (e.data.id !== procId || audio !== raw) return;
+      measuredF0 = e.data.f0;
+      if (measuredF0 > 0) state.userVoice = measuredF0 >= 160 ? 'женский' : 'мужской';
+      chooseVoice(state.preset);  // ползунки под измеренный голос -> processRecording()
+    };
+    worker.postMessage({ id, type: 'measure', audio, sr: ctx.sampleRate });
   }
 
   function processRecording() {
@@ -311,7 +344,8 @@
       const name = `Голос — ${state.preset}.wav`;
       const blob = new Blob([e.data.wav], { type: 'audio/wav' });
       setResult(blob, name);
-      $('#rec-status').textContent = `Готово: «${state.preset}», ${Math.round(e.data.seconds)} с. ` +
+      const yours = measuredF0 > 0 ? ` Ваш голос по записи: ${Math.round(measuredF0)} Гц.` : '';
+      $('#rec-status').textContent = `Готово: «${state.preset}», ${Math.round(e.data.seconds)} с.${yours} ` +
         'Прослушайте, скачайте или отправьте. Можно выбрать другой голос — запись пересчитается.';
     };
   }
