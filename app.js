@@ -216,7 +216,13 @@
       chooseVoice(state.preset);
     });
   }
-  voices.appendChild(me);
+  // «Мой голос» — сразу после обычных голосов, дальше отдельный блок призраков.
+  const firstGhost = voices.querySelector('.voice[data-voice="Глухой бас"]');
+  voices.insertBefore(me, firstGhost);
+  const ghostTitle = document.createElement('div');
+  ghostTitle.className = 'group-title';
+  ghostTitle.textContent = 'Призраки';
+  voices.insertBefore(ghostTitle, firstGhost);
 
   const sliders = {
     pitch: (v) => (v > 0 ? '+' : '') + v.toFixed(1),

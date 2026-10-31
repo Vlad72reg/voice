@@ -289,18 +289,19 @@
   }
 
   class Chorus {
-    constructor(sr) {
-      this.sr = sr; this.depth = 4 * sr / 1000; this.centre = 12 * sr / 1000;
+    constructor(sr, rate = 0.25, depthMs = 4, centreMs = 12, voices = 3, mix = 0.4) {
+      this.sr = sr; this.rate = rate; this.depth = depthMs * sr / 1000; this.centre = centreMs * sr / 1000;
+      this.voices = voices; this.mix = mix;
       this.buf = new Float64Array(Math.floor(sr * 0.1)); this.pos = 0; this.t = 0;
     }
     process(x, len) {
-      const size = this.buf.length, voices = 3, mix = 0.4;
+      const size = this.buf.length, voices = this.voices, mix = this.mix;
       for (let i = 0; i < len; i++) {
         this.buf[this.pos] = x[i];
         const time = (this.t + i) / this.sr;
         let wet = 0;
         for (let v = 0; v < voices; v++) {
-          const delay = this.centre + this.depth * Math.sin(TWO_PI * 0.25 * time + TWO_PI * v / voices);
+          const delay = this.centre + this.depth * Math.sin(TWO_PI * this.rate * time + TWO_PI * v / voices);
           const p = this.pos - delay, i0 = Math.floor(p), fr = p - i0;
           const a = this.buf[((i0 % size) + size) % size], b = this.buf[(((i0 + 1) % size) + size) % size];
           wet += a + (b - a) * fr;
@@ -313,12 +314,14 @@
   }
 
   class EchoDelay {
-    constructor(sr) { this.buf = new Float64Array(Math.floor(sr * 0.33)); this.pos = 0; }
+    constructor(sr, delay = 0.33, feedback = 0.25, mix = 0.15) {
+      this.buf = new Float64Array(Math.floor(sr * delay)); this.pos = 0; this.feedback = feedback; this.mix = mix;
+    }
     process(x, len) {
       for (let i = 0; i < len; i++) {
         const d = this.buf[this.pos];
-        this.buf[this.pos] = x[i] + d * 0.25;
-        x[i] += d * 0.15;
+        this.buf[this.pos] = x[i] + d * this.feedback;
+        x[i] += d * this.mix;
         this.pos = (this.pos + 1) % this.buf.length;
       }
     }
@@ -326,11 +329,11 @@
 
   /** Реверберация Freeverb (8 гребенчатых + 4 всепропускающих). */
   class Reverb {
-    constructor(sr) {
+    // По умолчанию — короткая тихая «комната»: длинная реверберация сливала слова (см. ghost_lab.py).
+    constructor(sr, room = 0.65, damping = 0.45, wet = 0.2, dry = 0.85) {
       const scale = sr / 44100;
-      // Короткая тихая «комната»: длинная реверберация сливала слова (см. ghost_lab.py).
-      this.feedback = 0.7 + 0.28 * 0.65; this.damp = 0.45 * 0.4;
-      this.wet = 0.2 * 0.15; this.dry = 0.85;
+      this.feedback = 0.7 + 0.28 * room; this.damp = damping * 0.4;
+      this.wet = wet * 0.15; this.dry = dry;
       this.comb = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617]
         .map((d) => ({ buf: new Float64Array(Math.floor(d * scale)), pos: 0, lp: 0 }));
       this.ap = [556, 441, 341, 225].map((d) => ({ buf: new Float64Array(Math.floor(d * scale)), pos: 0 }));
@@ -427,11 +430,12 @@
   const VOICES = {
     'Мужской': { target: 105, tweak: 0.95, whisper: 0, ghost: false, level: 1.6, hint: 'ниже и глубже' },
     'Женский': { target: 220, tweak: 1.0, whisper: 0, ghost: false, level: 0.8, hint: 'выше и светлее' },
-    'Призрак': { target: null, pitch: -3, formant: 0.92, whisper: 0.5, ghost: true, level: 7.8, hint: 'шёпот и эхо' },
-    'Радио-бас': { target: 85, tweak: 0.97, whisper: 0, ghost: false, level: -1.2, style: 'radio', hint: 'глубокий эфирный' },
-    'Аниме / VTuber': { target: 250, tweak: 1.03, whisper: 0, ghost: false, level: -2.0, style: 'anime', hint: 'звонкий и милый' },
-    'Мягкий женский': { target: 205, tweak: 0.98, whisper: 0, ghost: false, level: -1.5, style: 'soft', hint: 'тёплый, эфирный' },
-    'Без изменений': { target: null, pitch: 0, formant: 1.0, whisper: 0, ghost: false, level: 0, hint: 'ваш голос' },
+    // Призраки. На ПК это ИИ-голоса (Beatrice), в браузере — обычная обработка с теми же эффектами.
+    'Глухой бас': { target: 90, tweak: 0.92, whisper: 0.3, ghost: true, level: -2.7, style: 'cave', hint: 'низкий, гулкий' },
+    'Хриплый старик': { target: 125, tweak: 0.97, whisper: 0.45, ghost: true, level: 6.7, style: 'hoarse', hint: 'хрип и придыхание' },
+    'Шелестящая дама': { target: 220, tweak: 1.0, whisper: 0.45, ghost: true, level: 11.9, style: 'rustle', hint: 'шелест, двоение' },
+    'Девочка из колодца': { target: 270, tweak: 1.05, whisper: 0.3, ghost: true, level: 2.8, style: 'well', hint: 'высокий, эхо' },
+    'Хор призраков': { target: 100, tweak: 0.95, whisper: 0.35, ghost: true, level: 5.8, style: 'choir', hint: 'многоголосие' },
   };
   /** Типичная высота голоса пользователя (переключатель «Мой голос»), Гц. */
   const USER_VOICES = { 'мужской': 115, 'женский': 205 };
@@ -458,15 +462,34 @@
       level: Math.round(levelFor(name, pitch) * 10) / 10, style: v.style || null };
   }
 
-  /** Эфирная обработка стримерских голосов. */
+  /** Эквалайзер призраков (поверх общей цепочки GHOST_FX). */
   const STYLES = {
-    radio: (sr) => [new Filter(sr, 70, true), new EQ(sr, 'lowshelf', 140, 5), new EQ(sr, 'peak', 3000, 2, 1.0),
-      new Compressor(sr, -24, 4, 4)],
-    anime: (sr) => [new Filter(sr, 150, true), new EQ(sr, 'peak', 3500, 3, 1.0), new EQ(sr, 'highshelf', 9000, 3),
-      new Compressor(sr, -22, 3, 3)],
-    soft: (sr) => [new Filter(sr, 90, true), new EQ(sr, 'lowshelf', 200, 2), new EQ(sr, 'peak', 2500, 1.5, 1.0),
-      new EQ(sr, 'highshelf', 10000, 2), new Compressor(sr, -24, 2.5, 3)],
+    // Призраки: свои настройки общей цепочки — GHOST_FX ниже; здесь только эквалайзер.
+    cave: (sr) => [new EQ(sr, 'lowshelf', 150, 4)],
+    hoarse: (sr) => [new EQ(sr, 'peak', 2500, 4, 1.0)],
+    rustle: (sr) => [new EQ(sr, 'highshelf', 6000, 3)],
+    well: () => [],
+    choir: () => [],
   };
+
+  /**
+   * Цепочка эффектов призрака (как GHOST_FX в voice_engine.py): полоса (Гц), хорус (частота, глубина мс,
+   * центр мс, голосов, доля), эхо (задержка с, обратная связь, доля), реверберация (комната, глушение, доля, сухой).
+   */
+  const GHOST_FX = {
+    default: { band: [150, 7000], chorus: [0.25, 4, 12, 3, 0.4], echo: [0.33, 0.25, 0.15], reverb: [0.65, 0.45, 0.2, 0.85] },
+    cave: { band: [80, 5000], chorus: [0.25, 4, 12, 3, 0.3], echo: [0.33, 0.25, 0.15], reverb: [0.85, 0.4, 0.35, 0.85] },
+    hoarse: { band: [150, 7000], chorus: [0.25, 4, 12, 3, 0.4], echo: [0.33, 0.25, 0.15], reverb: [0.65, 0.45, 0.2, 0.85] },
+    rustle: { band: [150, 8000], chorus: [0.4, 6, 15, 3, 0.55], echo: [0.33, 0.25, 0.15], reverb: [0.65, 0.45, 0.2, 0.85] },
+    well: { band: [300, 6000], chorus: [0.25, 4, 12, 3, 0.3], echo: [0.22, 0.45, 0.3], reverb: [0.9, 0.4, 0.35, 0.85] },
+    choir: { band: [150, 7000], chorus: [0.15, 8, 25, 5, 0.7], echo: [0.33, 0.25, 0.15], reverb: [0.8, 0.4, 0.3, 0.85] },
+  };
+
+  function ghostChain(sr, variant) {
+    const f = GHOST_FX[variant];
+    return [new Filter(sr, f.band[0], true), new Filter(sr, f.band[1], false), new Chorus(sr, ...f.chorus),
+      new EchoDelay(sr, ...f.echo), new Reverb(sr, ...f.reverb)];
+  }
 
   /** Высота голоса по YIN (как pitch.py): медиана по звонким кадрам, Гц; 0 — голос не найден. */
   function medianF0(audio, sampleRate) {
@@ -524,10 +547,10 @@
       this.shifter.pitchRatio = Math.pow(2, s.pitch / 12);
       this.shifter.formantRatio = s.formant;
       this.shifter.whisper = s.whisper;
-      if (s.ghost && this.ghostFx.length === 0) {
-        const sr = this.sr;
-        this.ghostFx = [new Filter(sr, 150, true), new Filter(sr, 7000, false),
-          new Chorus(sr), new EchoDelay(sr), new Reverb(sr)];
+      const variant = GHOST_FX[s.style] ? s.style : 'default';
+      if (s.ghost && (this.ghostFx.length === 0 || variant !== this.ghostVariant)) {
+        this.ghostFx = ghostChain(this.sr, variant);
+        this.ghostVariant = variant;
       } else if (!s.ghost) this.ghostFx = [];
       const style = s.style || null;
       if (style !== this.style) {
