@@ -428,8 +428,11 @@
    * считается от высоты голоса пользователя (null — фиксированный pitch/formant, как у «Призрака»).
    */
   const VOICES = {
-    'Мужской': { target: 105, tweak: 0.95, whisper: 0, ghost: false, level: 1.6, hint: 'ниже и глубже' },
-    'Женский': { target: 220, tweak: 1.0, whisper: 0, ghost: false, level: 0.8, hint: 'выше и светлее' },
+    // ai — ИИ-голос (ai-worker.js): номер диктора модели, его высота (Гц), компенсация громкости (дБ).
+    'Мужской': { target: 105, tweak: 0.95, whisper: 0, ghost: false, level: 1.6, hint: 'ниже и глубже',
+      ai: { spk: 1, hz: 110, level: 7.1 } },
+    'Женский': { target: 220, tweak: 1.0, whisper: 0, ghost: false, level: 0.8, hint: 'выше и светлее',
+      ai: { spk: 0, hz: 220, level: 7.6 } },
     // Призраки. На ПК это ИИ-голоса (Beatrice), в браузере — обычная обработка с теми же эффектами.
     'Глухой бас': { target: 90, tweak: 0.92, whisper: 0.3, ghost: true, level: -2.7, style: 'cave', hint: 'низкий, гулкий' },
     'Хриплый старик': { target: 125, tweak: 0.97, whisper: 0.45, ghost: true, level: 6.7, style: 'hoarse', hint: 'хрип и придыхание' },

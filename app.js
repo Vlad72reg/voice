@@ -33,6 +33,54 @@
   let raw = null, procId = 0, resultUrl = null, resultFile = null;
   const worker = new Worker('worker.js');
 
+  // ---------- ИИ-голос (Beatrice): «Мужской» и «Женский» считает нейросеть в фоновом потоке ----------
+  // state: loading — модель загружается; on — работает; off — недоступна; slow — компьютер не успевает.
+  const ai = { state: 'off', worker: null, wired: false, slow: 0 };
+  /** Параметры ИИ для голоса name, если ИИ сейчас работает; иначе null (обычная обработка). */
+  const aiFor = (name) => (ai.state === 'on' && VOICES[name].ai) || null;
+  const aiShift = (v) => Math.max(-12, Math.min(12, 12 * Math.log2(v.hz / userF0())));
+
+  function startAi() {
+    if (typeof WebAssembly === 'undefined' || !window.Worker) return;
+    ai.state = 'loading';
+    ai.worker = new Worker('ai-worker.js');
+    ai.worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'ready') { ai.state = 'on'; wireAi(); sendConfig(); renderAi(); }
+      else if (m.type === 'error' && ai.state === 'loading') { ai.state = 'off'; renderAi(); }
+      else if (m.type === 'stats') onAiStats(m);
+      else if (m.type === 'converted' || m.type === 'error') onAiConverted(m);
+    };
+    ai.worker.postMessage({ type: 'init' });
+  }
+
+  /** Ворклет и фоновый поток соединяются напрямую: звук идёт мимо главного потока. */
+  function wireAi() {
+    if (ai.wired || !node || ai.state !== 'on') return;
+    const ch = new MessageChannel();
+    node.port.postMessage({ type: 'ai-port', port: ch.port1 }, [ch.port1]);
+    ai.worker.postMessage({ type: 'port', port: ch.port2, sr: ctx.sampleRate }, [ch.port2]);
+    ai.wired = true;
+  }
+
+  /** Если шаг нейросети не укладывается во время звука — переходим на обычную обработку. */
+  function onAiStats(m) {
+    if (ai.state !== 'on' || !live) return;
+    ai.slow = m.ms > 0.9 * m.budget || m.backlog > 3 ? ai.slow + 1 : Math.max(0, ai.slow - 1);
+    if (ai.slow >= 4) { ai.state = 'slow'; sendConfig(); renderAi(); }
+  }
+
+  function renderAi() {
+    const el = $('#ai-status'), v = VOICES[state.preset].ai;
+    el.classList.toggle('warn', ai.state === 'slow');
+    el.textContent = !v ? '' : {
+      loading: 'ИИ-голос загружается (около 40 МБ, один раз)… Пока — обычная обработка.',
+      on: 'ИИ-голос: нейросеть прямо в браузере. «Тембр» и «Шёпот» для него не действуют.',
+      off: 'ИИ-голос недоступен в этом браузере — обычная обработка.',
+      slow: 'Компьютер не успевает с ИИ-голосом — включена обычная обработка (перезагрузите страницу, чтобы попробовать снова).',
+    }[ai.state];
+  }
+
   const supported = !!(window.AudioWorkletNode && navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
   if (!supported) {
     $('#unsupported').style.display = 'block';
@@ -99,7 +147,14 @@
   }
 
   function sendConfig() {
-    if (node) node.port.postMessage({ type: 'config', settings: settings() });
+    if (!node) return;
+    node.port.postMessage({ type: 'config', settings: settings() });
+    const v = aiFor(state.preset);
+    if (v) {
+      wireAi();
+      ai.worker.postMessage({ type: 'voice', spk: v.spk, shift: aiShift(v) });
+    }
+    node.port.postMessage({ type: 'ai', on: !!v, gain: v ? state.gain + v.level : 0 });
   }
 
   function onWorkletMessage(e) {
@@ -232,6 +287,7 @@
   };
 
   function render() {
+    renderAi();
     for (const b of voices.querySelectorAll('.voice')) b.setAttribute('aria-pressed', b.dataset.voice === state.preset);
     for (const b of me.querySelectorAll('button')) b.setAttribute('aria-pressed', b.dataset.user === state.userVoice);
     for (const [k, fmt] of Object.entries(sliders)) {
@@ -343,6 +399,13 @@
   function processRecording() {
     const id = ++procId;
     setResult(null);
+    const v = aiFor(state.preset);
+    if (v) {
+      $('#rec-status').textContent = 'Обработка нейросетью…';
+      ai.worker.postMessage({ type: 'convert', id, audio: raw, sr: ctx.sampleRate, spk: v.spk, shift: aiShift(v),
+        gain: state.gain + v.level });
+      return;
+    }
     $('#rec-status').textContent = 'Обработка…';
     worker.postMessage({ id, audio: raw, sr: ctx.sampleRate, settings: settings(), voice: state.preset });
     worker.onmessage = (e) => {
@@ -354,6 +417,16 @@
       $('#rec-status').textContent = `Готово: «${state.preset}», ${Math.round(e.data.seconds)} с.${yours} ` +
         'Прослушайте, скачайте или отправьте. Можно выбрать другой голос — запись пересчитается.';
     };
+  }
+
+  function onAiConverted(m) {
+    if (m.id !== procId) return;
+    if (m.type === 'error') { ai.state = 'off'; renderAi(); processRecording(); return; }
+    const name = `Голос — ${state.preset}.wav`;
+    setResult(new Blob([m.wav], { type: 'audio/wav' }), name);
+    const yours = measuredF0 > 0 ? ` Ваш голос по записи: ${Math.round(measuredF0)} Гц.` : '';
+    $('#rec-status').textContent = `Готово: «${state.preset}» (ИИ-голос), ${Math.round(m.seconds)} с.${yours} ` +
+      'Прослушайте, скачайте или отправьте. Можно выбрать другой голос — запись пересчитается.';
   }
 
   function setResult(blob, name) {
@@ -383,6 +456,7 @@
       try { await ensureAudio(); } catch (e) { micError(e); return; }
     }
     live = on;
+    if (on && ai.worker && ai.state === 'on') ai.worker.postMessage({ type: 'reset' });
     if (node) node.port.postMessage({ type: 'live', on });
     const btn = $('#live');
     btn.textContent = on ? 'Выключить' : 'Включить';
@@ -417,4 +491,5 @@
   }
 
   render();
+  startAi();
 })();
