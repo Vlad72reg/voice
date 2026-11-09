@@ -433,6 +433,14 @@
       ai: { spk: 1, hz: 110, level: 7.1 } },
     'Женский': { target: 220, tweak: 1.0, whisper: 0, ghost: false, level: 0.8, hint: 'выше и светлее',
       ai: { spk: 0, hz: 220, level: 7.6 } },
+    // Женские голоса (group 'female'): на ПК это голоса нейросети JVS, здесь — обычная обработка
+    // с той же высотой и разным тембром, поэтому звучат проще.
+    'Чистый': { target: 215, tweak: 1.0, whisper: 0, ghost: false, level: 4.0, group: 'female', hint: '215 Гц' },
+    'Звонкий': { target: 279, tweak: 1.07, whisper: 0, ghost: false, level: 4.8, group: 'female', hint: '279 Гц' },
+    'Воздушный': { target: 256, tweak: 1.03, whisper: 0.2, ghost: false, level: 6.6, group: 'female', hint: '256 Гц' },
+    'Светлый': { target: 251, tweak: 1.05, whisper: 0, ghost: false, level: 4.5, group: 'female', hint: '251 Гц' },
+    'Ровный': { target: 226, tweak: 1.0, whisper: 0, ghost: false, level: 4.4, group: 'female', hint: '226 Гц' },
+    'Мягкий': { target: 203, tweak: 0.97, whisper: 0.05, ghost: false, level: 4.7, group: 'female', hint: '203 Гц' },
     // Призраки. На ПК это ИИ-голоса (Beatrice), в браузере — обычная обработка с теми же эффектами.
     'Глухой бас': { target: 90, tweak: 0.92, whisper: 0.3, ghost: true, level: -2.7, style: 'cave', hint: 'низкий, гулкий' },
     'Хриплый старик': { target: 125, tweak: 0.97, whisper: 0.45, ghost: true, level: 6.7, style: 'hoarse', hint: 'хрип и придыхание' },

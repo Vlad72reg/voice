@@ -271,13 +271,24 @@
       chooseVoice(state.preset);
     });
   }
-  // «Мой голос» — сразу после обычных голосов, дальше отдельный блок призраков.
-  const firstGhost = voices.querySelector('.voice[data-voice="Глухой бас"]');
-  voices.insertBefore(me, firstGhost);
-  const ghostTitle = document.createElement('div');
-  ghostTitle.className = 'group-title';
-  ghostTitle.textContent = 'Призраки';
-  voices.insertBefore(ghostTitle, firstGhost);
+  // «Мой голос» — сразу после обычных голосов, дальше блоки женских голосов и призраков.
+  const inGroup = (v, group) => (group === 'ghost' ? v.ghost : v.group === group);
+  const groupStart = (group) => voices.querySelector(`.voice[data-voice="${Object.keys(VOICES).find((n) => inGroup(VOICES[n], group))}"]`);
+  const firstFemale = groupStart('female');
+  voices.insertBefore(me, firstFemale);
+  for (const [group, title, note] of [['female', 'Женские голоса', 'полное звучание — в программе для компьютера'],
+    ['ghost', 'Призраки', '']]) {
+    const t = document.createElement('div');
+    t.className = 'group-title';
+    t.textContent = title;
+    if (note) {
+      const s = document.createElement('span');
+      s.className = 'group-note';
+      s.textContent = ' · ' + note;
+      t.appendChild(s);
+    }
+    voices.insertBefore(t, groupStart(group));
+  }
 
   const sliders = {
     pitch: (v) => (v > 0 ? '+' : '') + v.toFixed(1),
